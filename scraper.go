@@ -1,18 +1,18 @@
 package openldap_exporter
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
-	"context"
 	"fmt"
 	"io/ioutil"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
-	"regexp"
 
 	"github.com/prometheus/client_golang/prometheus"
 	log "github.com/sirupsen/logrus"
@@ -73,6 +73,22 @@ var (
 		},
 		[]string{"dn"},
 	)
+	bindCounter = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Subsystem: "openldap",
+			Name:      "bind",
+			Help:      "successful vs unsuccessful ldap bind attempts",
+		},
+		[]string{"result"},
+	)
+	dialCounter = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Subsystem: "openldap",
+			Name:      "dial",
+			Help:      "successful vs unsuccessful ldap dial attempts",
+		},
+		[]string{"result"},
+	)
 	scrapeCounter = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Subsystem: "openldap",
@@ -127,6 +143,8 @@ func init() {
 		monitorOperationGauge,
 		monitorReplicationGauge,
 		scrapeCounter,
+		bindCounter,
+		dialCounter,
 	)
 }
 
@@ -190,32 +208,31 @@ func setReplicationValue(entries []*ldap.Entry, q *query) {
 }
 
 type LDAPConfig struct {
-	UseTLS        bool
-	UseStartTLS   bool
-	Scheme      	string
-	Addr        	string
-	Host        	string
-	Port        	string
-	Protocol    	string
-	Username    	string
-	Password    	string
-	TLSConfig   	tls.Config
+	UseTLS      bool
+	UseStartTLS bool
+	Scheme      string
+	Addr        string
+	Host        string
+	Port        string
+	Protocol    string
+	Username    string
+	Password    string
+	TLSConfig   tls.Config
 }
 
 type Scraper struct {
-	LDAPConfig    LDAPConfig
-	Tick     			time.Duration
-	log      			log.FieldLogger
-	Sync     			[]string
+	LDAPConfig LDAPConfig
+	Tick       time.Duration
+	log        log.FieldLogger
+	Sync       []string
 }
-
 
 func (config *LDAPConfig) ProcessTLSoptions(addr string, useStartTLS bool, skipInsecure bool) error {
 
 	var u *url.URL
 
 	u, err := url.Parse(addr)
-	if (err != nil) {
+	if err != nil {
 		// Well, so far the easy way....
 		u = &url.URL{}
 	}
@@ -240,13 +257,13 @@ func (config *LDAPConfig) ProcessTLSoptions(addr string, useStartTLS bool, skipI
 	r, _ := regexp.Compile(":[0-9]+")
 	if u.Scheme == SchemeLDAPS {
 		config.UseTLS = true
-		if ! r.MatchString(config.Addr){
+		if !r.MatchString(config.Addr) {
 			config.Port = "636"
 			config.Addr += ":" + config.Port
 		}
 	} else if u.Scheme == SchemeLDAP {
 		config.UseTLS = false
-		if ! r.MatchString(config.Addr){
+		if !r.MatchString(config.Addr) {
 			config.Port = "389"
 			config.Addr += ":" + config.Port
 		}
@@ -256,9 +273,9 @@ func (config *LDAPConfig) ProcessTLSoptions(addr string, useStartTLS bool, skipI
 		return errors.New(u.Scheme + " is not a scheme i understand, refusing to continue")
 	}
 
-  config.TLSConfig.InsecureSkipVerify = skipInsecure
+	config.TLSConfig.InsecureSkipVerify = skipInsecure
 	config.TLSConfig.ServerName = config.Host
-	if ! config.UseTLS {
+	if !config.UseTLS {
 		// useStartTLS only relevant if not using TLS
 		config.UseStartTLS = useStartTLS
 	}
@@ -280,14 +297,11 @@ func (config *LDAPConfig) LoadCACert(cafile string) error {
 
 	config.TLSConfig.RootCAs = x509.NewCertPool()
 
-	ok := config.TLSConfig.RootCAs.AppendCertsFromPEM(cert)
-
-	if ok == false {
+	if !config.TLSConfig.RootCAs.AppendCertsFromPEM(cert) {
 		return errors.New("Could not parse CA")
 	}
 
 	return nil
-
 }
 
 func NewLDAPConfig() LDAPConfig {
@@ -320,11 +334,10 @@ func (s *Scraper) addReplicationQueries() {
 	}
 }
 
-func (s *Scraper) Start(ctx context.Context) error {
+func (s *Scraper) Start(ctx context.Context) {
 	s.log = log.WithField("component", "scraper")
 	s.addReplicationQueries()
 	security := "None"
-	s.log.Info("SECURITY: " + security)
 	if s.LDAPConfig.UseTLS {
 		security = "TLS"
 	} else if s.LDAPConfig.UseStartTLS {
@@ -340,22 +353,14 @@ func (s *Scraper) Start(ctx context.Context) error {
 	for {
 		select {
 		case <-ticker.C:
-			s.runOnce()
+			s.scrape()
 		case <-ctx.Done():
-			return nil
+			return
 		}
 	}
 }
 
-func (s *Scraper) runOnce() {
-	result := "fail"
-	if s.scrape() {
-		result = "ok"
-	}
-	scrapeCounter.WithLabelValues(result).Inc()
-}
-
-func (s *Scraper) scrape() bool {
+func (s *Scraper) scrape() {
 	var conn *ldap.Conn
 	var err error
 
@@ -365,41 +370,46 @@ func (s *Scraper) scrape() bool {
 		conn, err = ldap.Dial(s.LDAPConfig.Protocol, s.LDAPConfig.Addr)
 		if err != nil {
 			s.log.WithError(err).Error("dial failed")
-			return false
+			dialCounter.WithLabelValues("fail").Inc()
+			return
 		}
 
 		if s.LDAPConfig.UseStartTLS {
 			err = conn.StartTLS(&s.LDAPConfig.TLSConfig)
 			if err != nil {
 				s.log.WithError(err).Error("StartTLS failed")
-				return false
+				dialCounter.WithLabelValues("fail").Inc()
+				return
 			}
 		}
 	}
 
 	if err != nil {
 		s.log.WithError(err).Error("dial failed")
-		return false
+		dialCounter.WithLabelValues("fail").Inc()
+		return
 	}
-
-  defer conn.Close()
+	dialCounter.WithLabelValues("ok").Inc()
+	defer conn.Close()
 
 	if s.LDAPConfig.Username != "" && s.LDAPConfig.Password != "" {
 		err = conn.Bind(s.LDAPConfig.Username, s.LDAPConfig.Password)
 		if err != nil {
 			s.log.WithError(err).Error("bind failed")
-			return false
+			bindCounter.WithLabelValues("fail").Inc()
+			return
 		}
+		bindCounter.WithLabelValues("ok").Inc()
 	}
 
-	ret := true
+	scrapeRes := "ok"
 	for _, q := range queries {
-		if err := scrapeQuery(conn, q); err != nil {
+		if err = scrapeQuery(conn, q); err != nil {
 			s.log.WithError(err).WithField("filter", q.searchFilter).Warn("query failed")
-			ret = false
+			scrapeRes = "fail"
 		}
 	}
-	return ret
+	scrapeCounter.WithLabelValues(scrapeRes).Inc()
 }
 
 func scrapeQuery(conn *ldap.Conn, q *query) error {

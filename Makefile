@@ -1,15 +1,16 @@
 GITCOMMIT := $(shell git rev-parse --short HEAD 2>/dev/null)
 GIT_TAG := $(shell git describe --tags 2>/dev/null)
 
-LDFLAGS := -X github.com/tomcz/openldap_exporter.commit=${GITCOMMIT}
-LDFLAGS := ${LDFLAGS} -X github.com/tomcz/openldap_exporter.tag=${GIT_TAG}
+LDFLAGS := -s -w -X github.com/mlorenzo-stratio/openldap_exporter.commit=${GITCOMMIT}
+LDFLAGS := ${LDFLAGS} -X github.com/mlorenzo-stratio/openldap_exporter.tag=${GIT_TAG}
+OUTFILE ?= openldap_exporter
 
 .PHONY: precommit
-precommit: clean format lint build
+precommit: clean format lint compile
 
 .PHONY: commit
-commit: clean
-	GO111MODULE=on GOFLAGS='-mod=vendor' $(MAKE) build
+commit: clean cross-compile
+	ls -lha target/
 
 .PHONY: clean
 clean:
@@ -21,28 +22,34 @@ target:
 .PHONY: format
 format:
 ifeq (, $(shell which goimports))
-	go get golang.org/x/tools/cmd/goimports
+	go install golang.org/x/tools/cmd/goimports@latest
 endif
 	@echo "Running goimports ..."
-	@goimports -w -local github.com/tomcz/openldap_exporter $(shell find . -type f -name '*.go' | grep -v '/vendor/')
+	@goimports -w -local github.com/mlorenzo-stratio/openldap_exporter $(shell find . -type f -name '*.go' | grep -v '/vendor/')
 
 .PHONY: lint
 lint:
 ifeq (, $(shell which staticcheck))
-	go install honnef.co/go/tools/cmd/staticcheck@2021.1
+	go install honnef.co/go/tools/cmd/staticcheck@latest
 endif
 	@echo "Running staticcheck ..."
 	@staticcheck $(shell go list ./... | grep -v /vendor/)
 
-compile = GOOS=$1 GOARCH=amd64 go build -mod=mod -ldflags "${LDFLAGS}" -o target/openldap_exporter-$1 ./cmd/openldap_exporter
+.PHONY: compile
+compile: target
+	go build -ldflags "${LDFLAGS}" -o target/${OUTFILE} ./cmd/openldap_exporter/...
+ifeq (, $(SKIP_TGZ))
+	gzip -c < target/${OUTFILE} > target/${OUTFILE}.gz
+endif
+
+.PHONY: cross-compile
+cross-compile:
+	OUTFILE=openldap_exporter-linux-amd64 GOOS=linux GOARCH=amd64 $(MAKE) compile
+	OUTFILE=openldap_exporter-linux-nocgo CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(MAKE) compile
+	OUTFILE=openldap_exporter-osx-amd64 GOOS=darwin GOARCH=amd64 $(MAKE) compile
+	OUTFILE=openldap_exporter-osx-arm64 GOOS=darwin GOARCH=arm64 $(MAKE) compile
+	(cd target && find . -name '*.gz' -exec sha256sum {} \;) > target/verify.sha256
 
 .PHONY: build-linux
-build-linux: target
-	$(call compile,linux)
-
-.PHONY: build-darwin
-build-darwin: target
-	$(call compile,darwin)
-
-.PHONY: build
-build: target build-linux build-darwin
+build-linux:
+	OUTFILE=openldap_exporter-linux SKIP_TGZ=true GOOS=linux GOARCH=amd64 $(MAKE) compile
