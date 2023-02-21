@@ -32,11 +32,18 @@ func nestedVal(name string, tree map[interface{}]interface{}) (interface{}, bool
 			if !ok {
 				return nil, false
 			}
-			ctype, ok := child.(map[interface{}]interface{})
-			if !ok {
+
+			switch child := child.(type) {
+			case map[string]interface{}:
+				node = make(map[interface{}]interface{}, len(child))
+				for k, v := range child {
+					node[k] = v
+				}
+			case map[interface{}]interface{}:
+				node = child
+			default:
 				return nil, false
 			}
-			node = ctype
 		}
 		if val, ok := node[sections[len(sections)-1]]; ok {
 			return val, true
@@ -113,6 +120,72 @@ func (fsm *MapInputSource) Float64(name string) (float64, error) {
 		otherValue, isType := nestedGenericValue.(float64)
 		if !isType {
 			return 0, incorrectTypeForFlagError(name, "float64", nestedGenericValue)
+		}
+		return otherValue, nil
+	}
+
+	return 0, nil
+}
+
+// Int64 returns an int64 from the map if it exists otherwise returns 0
+func (fsm *MapInputSource) Int64(name string) (int64, error) {
+	otherGenericValue, exists := fsm.valueMap[name]
+	if exists {
+		otherValue, isType := otherGenericValue.(int64)
+		if !isType {
+			return 0, incorrectTypeForFlagError(name, "int64", otherGenericValue)
+		}
+		return otherValue, nil
+	}
+	nestedGenericValue, exists := nestedVal(name, fsm.valueMap)
+	if exists {
+		otherValue, isType := nestedGenericValue.(int64)
+		if !isType {
+			return 0, incorrectTypeForFlagError(name, "int64", nestedGenericValue)
+		}
+		return otherValue, nil
+	}
+
+	return 0, nil
+}
+
+// Int64 returns an int64 from the map if it exists otherwise returns 0
+func (fsm *MapInputSource) Uint(name string) (uint, error) {
+	otherGenericValue, exists := fsm.valueMap[name]
+	if exists {
+		otherValue, isType := otherGenericValue.(uint)
+		if !isType {
+			return 0, incorrectTypeForFlagError(name, "uint", otherGenericValue)
+		}
+		return otherValue, nil
+	}
+	nestedGenericValue, exists := nestedVal(name, fsm.valueMap)
+	if exists {
+		otherValue, isType := nestedGenericValue.(uint)
+		if !isType {
+			return 0, incorrectTypeForFlagError(name, "uint", nestedGenericValue)
+		}
+		return otherValue, nil
+	}
+
+	return 0, nil
+}
+
+// UInt64 returns an uint64 from the map if it exists otherwise returns 0
+func (fsm *MapInputSource) Uint64(name string) (uint64, error) {
+	otherGenericValue, exists := fsm.valueMap[name]
+	if exists {
+		otherValue, isType := otherGenericValue.(uint64)
+		if !isType {
+			return 0, incorrectTypeForFlagError(name, "uint64", otherGenericValue)
+		}
+		return otherValue, nil
+	}
+	nestedGenericValue, exists := nestedVal(name, fsm.valueMap)
+	if exists {
+		otherValue, isType := nestedGenericValue.(uint64)
+		if !isType {
+			return 0, incorrectTypeForFlagError(name, "uint64", nestedGenericValue)
 		}
 		return otherValue, nil
 	}
@@ -200,6 +273,64 @@ func (fsm *MapInputSource) IntSlice(name string) ([]int, error) {
 	return intSlice, nil
 }
 
+// Int64Slice returns an []int64 from the map if it exists otherwise returns nil
+func (fsm *MapInputSource) Int64Slice(name string) ([]int64, error) {
+	otherGenericValue, exists := fsm.valueMap[name]
+	if !exists {
+		otherGenericValue, exists = nestedVal(name, fsm.valueMap)
+		if !exists {
+			return nil, nil
+		}
+	}
+
+	otherValue, isType := otherGenericValue.([]interface{})
+	if !isType {
+		return nil, incorrectTypeForFlagError(name, "[]interface{}", otherGenericValue)
+	}
+
+	var int64Slice = make([]int64, 0, len(otherValue))
+	for i, v := range otherValue {
+		int64Value, isType := v.(int64)
+
+		if !isType {
+			return nil, incorrectTypeForFlagError(fmt.Sprintf("%s[%d]", name, i), "int", v)
+		}
+
+		int64Slice = append(int64Slice, int64Value)
+	}
+
+	return int64Slice, nil
+}
+
+// Float64Slice returns an []float64 from the map if it exists otherwise returns nil
+func (fsm *MapInputSource) Float64Slice(name string) ([]float64, error) {
+	otherGenericValue, exists := fsm.valueMap[name]
+	if !exists {
+		otherGenericValue, exists = nestedVal(name, fsm.valueMap)
+		if !exists {
+			return nil, nil
+		}
+	}
+
+	otherValue, isType := otherGenericValue.([]interface{})
+	if !isType {
+		return nil, incorrectTypeForFlagError(name, "[]interface{}", otherGenericValue)
+	}
+
+	var float64Slice = make([]float64, 0, len(otherValue))
+	for i, v := range otherValue {
+		float64Value, isType := v.(float64)
+
+		if !isType {
+			return nil, incorrectTypeForFlagError(fmt.Sprintf("%s[%d]", name, i), "int", v)
+		}
+
+		float64Slice = append(float64Slice, float64Value)
+	}
+
+	return float64Slice, nil
+}
+
 // Generic returns an cli.Generic from the map if it exists otherwise returns nil
 func (fsm *MapInputSource) Generic(name string) (cli.Generic, error) {
 	otherGenericValue, exists := fsm.valueMap[name]
@@ -242,6 +373,15 @@ func (fsm *MapInputSource) Bool(name string) (bool, error) {
 	}
 
 	return false, nil
+}
+
+func (fsm *MapInputSource) isSet(name string) bool {
+	if _, exists := fsm.valueMap[name]; exists {
+		return exists
+	}
+
+	_, exists := nestedVal(name, fsm.valueMap)
+	return exists
 }
 
 func incorrectTypeForFlagError(name, expectedTypeName string, value interface{}) error {
