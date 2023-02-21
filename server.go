@@ -48,7 +48,14 @@ func showVersion(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) Start() error {
 	s.logger.WithField("addr", s.server.Addr).Info("starting http listener")
-	err := web.ListenAndServe(s.server, s.cfgPath, kitlog.LoggerFunc(s.adaptor))
+	serverAddress := []string{s.server.Addr}
+	useSystemdSocket := false
+	var flags web.FlagConfig = web.FlagConfig{
+		WebListenAddresses: &serverAddress,
+		WebSystemdSocket:   &useSystemdSocket,
+		WebConfigFile:      &s.cfgPath,
+	}
+	err := web.ListenAndServe(s.server, &flags, kitlog.LoggerFunc(s.adaptor))
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
